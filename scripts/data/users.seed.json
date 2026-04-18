@@ -1,0 +1,16 @@
+[
+  {
+    "userId": "69be14004f7e099f8621ad6b",
+    "favoriteGenres": ["Drama", "Romance", "Comedy"]
+  },
+  {
+    "userId": "69be14004f7e099f8621ad6c",
+    "favoriteGenres": ["Action", "Sci-Fi", "Adventure"]
+  },
+  {
+    "userId": "69bb3d5ee1db9d17817b70cb",
+    "favoriteGenres": ["Thriller", "Crime", "Mystery"]
+  }
+]
+
+
