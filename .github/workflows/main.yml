@@ -1,0 +1,75 @@
+# .github/workflows/deploy.yml
+
+name: Deploy FastAPI to Azure Web App
+
+on:
+  push:
+    branches:
+      - AI-engine-for-recommendations-and-voting
+  workflow_dispatch:
+
+env:
+  AZURE_WEBAPP_NAME: miralo-AI
+  PYTHON_VERSION: '3.11'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v4
+
+      - name: Setup Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Instalar dependencias
+        run: |
+          python -m venv .venv
+          source .venv/bin/activate
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Correr tests
+        run: |
+          source .venv/bin/activate
+          pytest tests/ -v
+        continue-on-error: false
+
+      - name: Empaquetar artefacto
+        run: |
+          zip -r release.zip . \
+            --exclude "*.git*" \
+            --exclude "__pycache__/*" \
+            --exclude "*.pyc" \
+            --exclude "tests/*"
+
+      - name: Subir artefacto
+        uses: actions/upload-artifact@v4
+        with:
+          name: fastapi-app
+          path: release.zip
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build
+    environment:
+      name: production
+      url: ${{ steps.deploy.outputs.webapp-url }}
+
+    steps:
+      - name: Descargar artefacto
+        uses: actions/download-artifact@v4
+        with:
+          name: fastapi-app
+
+      - name: Deploy a Azure Web App
+        id: deploy
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: ${{ env.AZURE_WEBAPP_NAME }}
+          publish-profile: ${{ secrets.AZURE_PUBLISH_PROFILE }}
+          package: release.zip
+          startup-command: 'gunicorn main:app --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000'
