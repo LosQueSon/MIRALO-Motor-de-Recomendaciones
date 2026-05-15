@@ -39,13 +39,21 @@ jobs:
           cp main.py requirements.txt startup.sh deploy/
           cp -r ml deploy/
           cp -r ml_models deploy/
-          # ratings.csv is NOT bundled — it is only needed for training.
-          # popularity is loaded from movies.csv (pre-computed) or defaults to 0.
+          # ratings.csv is NOT bundled — only needed for training.
           mkdir -p deploy/data
           cp data/movies.csv deploy/data/
+
+          # Bundle production dependencies inside the zip so gunicorn and all
+          # packages are available at runtime without any pip install at startup.
+          # Azure App Service automatically adds .python_packages/lib/site-packages
+          # to PYTHONPATH when it detects that directory.
+          pip install \
+            --target deploy/.python_packages/lib/site-packages \
+            -r requirements.txt
+
           cd deploy
-          # rf_model is excluded: XGBoost (531 KB) has identical accuracy and
-          # 20× smaller memory footprint. Keeping RF out saves ~11 MB per deploy.
+          # rf_model excluded: XGBoost (531 KB) has identical accuracy and
+          # 20× smaller footprint — saves ~11 MB per deploy.
           zip -r ../release.zip . \
             --exclude "*.git*" \
             --exclude "__pycache__/*" \
