@@ -2,7 +2,7 @@ name: Deploy to Azure
 
 on:
   push:
-    branches: ["main"]
+    branches: ["Feature-inicial"]
 
 jobs:
   build-and-deploy:
