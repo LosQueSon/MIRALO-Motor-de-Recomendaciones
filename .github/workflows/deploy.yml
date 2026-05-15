@@ -3,6 +3,7 @@ name: Deploy FastAPI to Azure Web App
 on:
   push:
     branches:
+      - main
       - AI-engine-for-recommendations-and-voting
   workflow_dispatch:
 
