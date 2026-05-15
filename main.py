@@ -61,7 +61,9 @@ class RecommendationService:
         self.movies_df: pd.DataFrame = pd.DataFrame()
         self.load_error: Optional[str] = None
         self.room_polls: dict[str, dict[str, Any]] = {}
-        self.reload()
+        # Do NOT load here — loading blocks the entire worker startup and causes
+        # Azure's HTTP probe to time out.  reload() is called from startup_event
+        # in a background thread so gunicorn can bind and respond immediately.
 
     def reload(self) -> None:
         try:
@@ -394,10 +396,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Service is initialised once on module import (which happens inside each
-# gunicorn worker). The startup event is intentionally omitted — a second
-# reload() call was doubling cold-start time and peak memory.
 service = RecommendationService()
+
+
+@app.on_event("startup")
+async def startup_event() -> None:
+    import asyncio
+    # Load model in a background thread so gunicorn binds immediately and
+    # Azure's startup probe (HTTP GET /) gets a 200 right away.
+    # Endpoints that need the model return 503 until loading finishes (~30-60 s).
+    asyncio.create_task(asyncio.to_thread(service.reload))
 
 
 @app.get("/")

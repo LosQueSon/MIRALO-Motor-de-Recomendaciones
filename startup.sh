@@ -3,16 +3,17 @@ set -e
 
 cd /home/site/wwwroot
 
-# Packages are bundled in .python_packages/lib/site-packages inside the deploy
-# zip.  Azure automatically adds that path to PYTHONPATH, so "python -m gunicorn"
-# finds gunicorn without needing the executable to be on PATH.
-# If an Oryx-built /antenv exists (SCM deploy), prefer that instead.
+# Prefer Oryx-built venv (SCM deploys) when present.
 if [ -d "/antenv" ]; then
     source /antenv/bin/activate
+else
+    # Explicitly add bundled packages to PYTHONPATH.  Azure only injects this
+    # automatically when using the default startup command; custom scripts must
+    # set it manually.
+    export PYTHONPATH="/home/site/wwwroot/.python_packages/lib/site-packages${PYTHONPATH:+:$PYTHONPATH}"
 fi
 
 # Single worker keeps memory under ~200 MB on the Azure Basic (B1) plan.
-# Timeout raised to 120 s for cold-start model loading on B1 CPU.
 python -m gunicorn \
   --workers 1 \
   --worker-class uvicorn.workers.UvicornWorker \
