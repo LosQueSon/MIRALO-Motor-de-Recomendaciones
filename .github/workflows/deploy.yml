@@ -24,10 +24,10 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: 'pip'
 
-      - name: Instalar dependencias
+      - name: Instalar dependencias (incluyendo dev para tests)
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
 
       - name: Ejecutar tests
         run: |
@@ -36,18 +36,22 @@ jobs:
       - name: Empaquetar artefacto
         run: |
           mkdir -p deploy
-          cp -r main.py requirements.txt startup.sh deploy/
+          cp main.py requirements.txt startup.sh deploy/
           cp -r ml deploy/
           cp -r ml_models deploy/
-          cp -r data deploy/
-          cp -r tests deploy/
+          # ratings.csv is NOT bundled — it is only needed for training.
+          # popularity is loaded from movies.csv (pre-computed) or defaults to 0.
+          mkdir -p deploy/data
+          cp data/movies.csv deploy/data/
           cd deploy
+          # rf_model is excluded: XGBoost (531 KB) has identical accuracy and
+          # 20× smaller memory footprint. Keeping RF out saves ~11 MB per deploy.
           zip -r ../release.zip . \
             --exclude "*.git*" \
             --exclude "__pycache__/*" \
             --exclude "*.pyc" \
             --exclude ".pytest_cache/*" \
-            --exclude "tests/*"
+            --exclude "ml_models/rf_recommender_model.joblib"
 
       - name: Subir artefacto
         uses: actions/upload-artifact@v4
@@ -82,4 +86,3 @@ jobs:
         run: |
           echo "✅ Deployment completed!"
           echo "App URL: https://${{ env.AZURE_WEBAPP_NAME }}.azurewebsites.net"
-

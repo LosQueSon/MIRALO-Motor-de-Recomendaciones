@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, List, Optional
 from uuid import uuid4
@@ -17,26 +17,11 @@ from ml.training.ml_model_predictor import MiraloMLPredictor
 ROOT_DIR = Path(__file__).resolve().parent
 MOVIES_FILE = ROOT_DIR / "data" / "movies.csv"
 REPORT_FILE = ROOT_DIR / "ml_models" / "training_report.json"
+POLL_TTL_SECONDS = 7200  # 2 hours
 KNOWN_GENRES = [
-    "Action",
-    "Adventure",
-    "Animation",
-    "Children",
-    "Comedy",
-    "Crime",
-    "Documentary",
-    "Drama",
-    "Fantasy",
-    "Film-Noir",
-    "Horror",
-    "IMAX",
-    "Musical",
-    "Mystery",
-    "Romance",
-    "Sci-Fi",
-    "Thriller",
-    "War",
-    "Western",
+    "Action", "Adventure", "Animation", "Children", "Comedy", "Crime",
+    "Documentary", "Drama", "Fantasy", "Film-Noir", "Horror", "IMAX",
+    "Musical", "Mystery", "Romance", "Sci-Fi", "Thriller", "War", "Western",
 ]
 
 
@@ -83,7 +68,9 @@ class RecommendationService:
             predictor = MiraloMLPredictor()
             predictor.load_movies()
             self.predictor = predictor
-            self.movies_df = predictor.movies_df.copy() if predictor.movies_df is not None else pd.DataFrame()
+            # Reference the predictor's df directly — no copy needed.
+            # parsed_genres is added in-place; predictor never uses that column.
+            self.movies_df = predictor.movies_df if predictor.movies_df is not None else pd.DataFrame()
             if not self.movies_df.empty:
                 self.movies_df["parsed_genres"] = self.movies_df["genres"].apply(self._parse_genres)
             self.load_error = None
@@ -117,16 +104,13 @@ class RecommendationService:
     def _room_request_from_payload(self, payload: Any, default_top_k: int = 10) -> RoomRecommendationRequest:
         if isinstance(payload, RoomRecommendationRequest):
             return payload
-
         if isinstance(payload, list):
             users = [RoomUser(**item) for item in payload]
             return RoomRecommendationRequest(users=users, topK=default_top_k)
-
         if isinstance(payload, dict):
             users = [RoomUser(**item) for item in payload.get("users", [])]
             top_k = int(payload.get("topK", default_top_k))
             return RoomRecommendationRequest(users=users, topK=max(default_top_k, top_k))
-
         raise HTTPException(status_code=400, detail="Invalid room payload")
 
     def _normalize_options(self, options: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -150,16 +134,11 @@ class RecommendationService:
         options = poll.get("options", [])
         if not options:
             return None
-
         vote_counts = self._poll_vote_counts(poll)
 
         def sort_key(option: dict[str, Any]) -> tuple[int, float, int]:
             movie_id = int(option["movieId"])
-            return (
-                vote_counts.get(movie_id, 0),
-                float(option.get("consensus_score", 0.0)),
-                -movie_id,
-            )
+            return (vote_counts.get(movie_id, 0), float(option.get("consensus_score", 0.0)), -movie_id)
 
         winner = max(options, key=sort_key)
         winner_copy = dict(winner)
@@ -173,92 +152,81 @@ class RecommendationService:
             option_copy = dict(option)
             option_copy["voteCount"] = vote_counts.get(int(option_copy["movieId"]), 0)
             options.append(option_copy)
-
-        return self._json_safe(
-            {
-                "pollId": poll["pollId"],
-                "createdAt": poll["createdAt"],
-                "totalUsers": poll.get("totalUsers", 0),
-                "votesCast": len(poll.get("votes", {})),
-                "options": self._normalize_options(options),
-                "winner": self._poll_winner({**poll, "options": options}),
-            }
-        )
+        return self._json_safe({
+            "pollId": poll["pollId"],
+            "createdAt": poll["createdAt"],
+            "totalUsers": poll.get("totalUsers", 0),
+            "votesCast": len(poll.get("votes", {})),
+            "options": self._normalize_options(options),
+            "winner": self._poll_winner({**poll, "options": options}),
+        })
 
     def _parse_genres(self, raw_genres: Any) -> list[str]:
         if raw_genres is None or (isinstance(raw_genres, float) and pd.isna(raw_genres)):
             return []
-
         text = str(raw_genres).strip()
         if not text or text == "(no genres listed)":
             return []
-
         if "|" in text:
             return [genre.strip() for genre in text.split("|") if genre.strip()]
-
         remaining = text
         parsed: list[str] = []
         ordered_genres = sorted(KNOWN_GENRES, key=len, reverse=True)
-
         while remaining:
             matched = None
             for genre in ordered_genres:
                 if remaining.startswith(genre):
                     parsed.append(genre)
-                    remaining = remaining[len(genre) :]
+                    remaining = remaining[len(genre):]
                     matched = True
                     break
-
             if not matched:
                 remaining = remaining[1:]
-
         return parsed
 
-    def _movie_genres(self, row: pd.Series) -> list[str]:
-        if "parsed_genres" in row and isinstance(row["parsed_genres"], list):
-            return [str(genre) for genre in row["parsed_genres"]]
-        return self._parse_genres(row.get("genres"))
+    def _cleanup_old_polls(self) -> None:
+        now = datetime.now(timezone.utc)
+        to_delete = [
+            pid for pid, poll in self.room_polls.items()
+            if (now - datetime.fromisoformat(poll["createdAt"].rstrip("Z")).replace(tzinfo=timezone.utc)).total_seconds() > POLL_TTL_SECONDS
+        ]
+        for pid in to_delete:
+            del self.room_polls[pid]
 
     def _build_genre_based_recommendations(self, preferred_genres: list[str], top_k: int) -> list[dict[str, Any]]:
         if self.movies_df.empty or not preferred_genres:
             return []
-
         preferred_set = {genre for genre in preferred_genres if genre}
         if not preferred_set:
             return []
 
-        candidates = []
-        for row in self.movies_df.itertuples(index=False):
-            movie_genres = self._movie_genres(pd.Series(row._asdict()))
-            overlap = preferred_set.intersection(movie_genres)
-            if not overlap:
-                continue
+        # Vectorised overlap count — avoids itertuples+pd.Series overhead
+        overlap_sizes = self.movies_df["parsed_genres"].apply(lambda g: len(preferred_set.intersection(g)))
+        mask = overlap_sizes > 0
+        if not mask.any():
+            return []
 
-            popularity = getattr(row, "popularity", 0.0)
-            try:
-                popularity_score = float(popularity) if pd.notna(popularity) else 0.0
-            except Exception:
-                popularity_score = 0.0
+        filtered = self.movies_df[mask].copy()
+        filtered["_overlap"] = overlap_sizes[mask].values
+        filtered["_popularity"] = filtered["popularity"].fillna(0.0)
+        filtered["consensus_score"] = (
+            (0.55 + filtered["_overlap"] * 0.15 + filtered["_popularity"] * 0.25)
+            .clip(upper=0.99)
+            .round(4)
+        )
+        filtered = filtered.sort_values(["_overlap", "_popularity", "title"], ascending=[False, False, True])
 
-            overlap_score = len(overlap)
-            combined_score = round(min(0.99, 0.55 + (overlap_score * 0.15) + (popularity_score * 0.25)), 4)
-            candidates.append(
-                {
-                    "movieId": int(getattr(row, "movieId")),
-                    "title": str(getattr(row, "title")),
-                    "genres": movie_genres,
-                    "consensus_score": combined_score,
-                    "reasons": [f"Coincide con los géneros de la sala: {', '.join(sorted(overlap))}"],
-                    "_overlap": overlap_score,
-                    "_popularity": popularity_score,
-                }
-            )
-
-        candidates.sort(key=lambda item: (-item["_overlap"], -item["_popularity"], item["title"]))
-        return self._json_safe([
-            {key: value for key, value in item.items() if not key.startswith("_")}
-            for item in candidates[:top_k]
-        ])
+        results = []
+        for row in filtered.head(top_k).itertuples(index=False):
+            overlap = preferred_set.intersection(row.parsed_genres)
+            results.append({
+                "movieId": int(row.movieId),
+                "title": str(row.title),
+                "genres": list(row.parsed_genres),
+                "consensus_score": round(float(row.consensus_score), 4),
+                "reasons": [f"Coincide con los géneros de la sala: {', '.join(sorted(overlap))}"],
+            })
+        return self._json_safe(results)
 
     def health(self) -> dict[str, Any]:
         return {
@@ -283,19 +251,16 @@ class RecommendationService:
                     genres.add(str(genre))
         if genres:
             return sorted(genres)
-
         if predictor.mlb is not None and hasattr(predictor.mlb, "classes_"):
             return [str(genre) for genre in predictor.mlb.classes_]
-
         return sorted(genres)
 
     def list_movies(self, skip: int = 0, limit: int = 20, genre: Optional[str] = None, q: Optional[str] = None) -> dict[str, Any]:
         self._ensure_ready()
-        df = self.movies_df.copy()
-
+        # Avoid copying the full DataFrame — filter produces a new view/subset
+        df = self.movies_df
         if q:
             df = df[df["title"].astype(str).str.contains(q, case=False, na=False)]
-
         if genre:
             normalized = genre.strip().lower()
             df = df[df["parsed_genres"].apply(lambda values: any(str(v).strip().lower() == normalized for v in values if str(v).strip()))]
@@ -306,7 +271,7 @@ class RecommendationService:
         else:
             df = df.sort_values(by=["title"], ascending=[True])
 
-        page = df.iloc[skip : skip + limit]
+        page = df.iloc[skip: skip + limit]
         movies = [
             {
                 "movieId": int(row.movieId),
@@ -353,9 +318,10 @@ class RecommendationService:
             genres = user.favoriteGenres or ([user.favoriteGenre] if user.favoriteGenre else [])
             preferred_genres.extend(genres)
             users.append({"userId": user.userId, "favoriteGenres": genres})
-        genre_based = self._build_genre_based_recommendations(preferred_genres, request.topK)
 
+        genre_based = self._build_genre_based_recommendations(preferred_genres, request.topK)
         result = predictor.predict_for_room(room_users_data=users, top_k=request.topK)
+
         if isinstance(result, dict) and result.get("error"):
             raise HTTPException(status_code=400, detail=str(result["error"]))
 
@@ -364,7 +330,6 @@ class RecommendationService:
 
         merged: list[dict[str, Any]] = []
         seen_movie_ids: set[int] = set()
-
         for item in genre_based + model_recommendations:
             movie_id = int(item["movieId"])
             if movie_id in seen_movie_ids:
@@ -382,6 +347,7 @@ class RecommendationService:
         })
 
     def create_room_poll(self, payload: Any) -> dict[str, Any]:
+        self._cleanup_old_polls()
         request = self._room_request_from_payload(payload)
         room_recommendations = self._recommend_room_from_request(request)
         options = self._normalize_options(room_recommendations.get("recommendations", [])[:3])
@@ -389,7 +355,7 @@ class RecommendationService:
         poll_id = str(uuid4())
         poll = {
             "pollId": poll_id,
-            "createdAt": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "createdAt": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
             "totalUsers": room_recommendations.get("totalUsers", len(request.users)),
             "options": options,
             "votes": {},
@@ -407,11 +373,9 @@ class RecommendationService:
         poll = self.room_polls.get(poll_id)
         if not poll:
             raise HTTPException(status_code=404, detail="Poll not found")
-
         allowed_ids = {int(option["movieId"]): option for option in poll.get("options", [])}
         if int(payload.movieId) not in allowed_ids:
             raise HTTPException(status_code=400, detail="Movie is not part of the poll options")
-
         poll.setdefault("votes", {})[payload.userId] = int(payload.movieId)
         return self._format_poll(poll)
 
@@ -430,12 +394,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Service is initialised once on module import (which happens inside each
+# gunicorn worker). The startup event is intentionally omitted — a second
+# reload() call was doubling cold-start time and peak memory.
 service = RecommendationService()
-
-
-@app.on_event("startup")
-def startup_event() -> None:
-    service.reload()
 
 
 @app.get("/")
@@ -539,12 +501,4 @@ def ml_get_room_poll(poll_id: str) -> dict[str, Any]:
 
 if __name__ == "__main__":
     import uvicorn
-
     uvicorn.run("main:app", host="0.0.0.0", port=3000, reload=False)
-
-
-
-
-
-
-
