@@ -1,37 +1,86 @@
 from __future__ import annotations
 
-import json
+from collections import Counter
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, List, Optional
 from uuid import uuid4
 
-import pandas as pd
 from fastapi import Body, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from ml.training.ml_model_predictor import MiraloMLPredictor
-
-
-ROOT_DIR = Path(__file__).resolve().parent
-MOVIES_FILE = ROOT_DIR / "data" / "movies.csv"
-REPORT_FILE = ROOT_DIR / "ml_models" / "training_report.json"
-POLL_TTL_SECONDS = 7200  # 2 hours
-KNOWN_GENRES = [
-    "Action", "Adventure", "Animation", "Children", "Comedy", "Crime",
-    "Documentary", "Drama", "Fantasy", "Film-Noir", "Horror", "IMAX",
-    "Musical", "Mystery", "Romance", "Sci-Fi", "Thriller", "War", "Western",
+# ---------------------------------------------------------------------------
+# Catalogue — movies and series with genre tags
+# ---------------------------------------------------------------------------
+CATALOGUE: list[dict[str, Any]] = [
+    {"movieId": 1,  "title": "The Dark Knight",                          "genres": ["Action", "Crime", "Drama"],                    "type": "movie"},
+    {"movieId": 2,  "title": "Die Hard",                                 "genres": ["Action", "Thriller"],                          "type": "movie"},
+    {"movieId": 3,  "title": "Mad Max: Fury Road",                       "genres": ["Action", "Adventure", "Sci-Fi"],               "type": "movie"},
+    {"movieId": 4,  "title": "John Wick",                                "genres": ["Action", "Thriller", "Crime"],                 "type": "movie"},
+    {"movieId": 5,  "title": "Avengers: Endgame",                        "genres": ["Action", "Adventure", "Sci-Fi"],               "type": "movie"},
+    {"movieId": 6,  "title": "Top Gun: Maverick",                        "genres": ["Action", "Drama"],                             "type": "movie"},
+    {"movieId": 7,  "title": "Mission: Impossible – Fallout",            "genres": ["Action", "Adventure", "Thriller"],             "type": "movie"},
+    {"movieId": 8,  "title": "Indiana Jones and the Raiders of the Lost Ark", "genres": ["Action", "Adventure"],                   "type": "movie"},
+    {"movieId": 9,  "title": "The Matrix",                               "genres": ["Action", "Sci-Fi"],                            "type": "movie"},
+    {"movieId": 10, "title": "Everything Everywhere All at Once",        "genres": ["Action", "Adventure", "Comedy", "Sci-Fi"],     "type": "movie"},
+    {"movieId": 11, "title": "The Shawshank Redemption",                 "genres": ["Drama"],                                       "type": "movie"},
+    {"movieId": 12, "title": "Forrest Gump",                             "genres": ["Drama", "Romance"],                            "type": "movie"},
+    {"movieId": 13, "title": "Parasite",                                 "genres": ["Drama", "Thriller"],                           "type": "movie"},
+    {"movieId": 14, "title": "Oppenheimer",                              "genres": ["Drama", "Thriller"],                           "type": "movie"},
+    {"movieId": 15, "title": "La La Land",                               "genres": ["Drama", "Romance", "Musical"],                 "type": "movie"},
+    {"movieId": 16, "title": "Gone Girl",                                "genres": ["Drama", "Mystery", "Thriller"],                "type": "movie"},
+    {"movieId": 17, "title": "The Godfather",                            "genres": ["Crime", "Drama"],                              "type": "movie"},
+    {"movieId": 18, "title": "Interstellar",                             "genres": ["Adventure", "Drama", "Sci-Fi"],                "type": "movie"},
+    {"movieId": 19, "title": "Blade Runner 2049",                        "genres": ["Drama", "Mystery", "Sci-Fi"],                  "type": "movie"},
+    {"movieId": 20, "title": "Dune",                                     "genres": ["Adventure", "Drama", "Sci-Fi"],                "type": "movie"},
+    {"movieId": 21, "title": "Jurassic Park",                            "genres": ["Adventure", "Sci-Fi", "Thriller"],             "type": "movie"},
+    {"movieId": 22, "title": "The Lord of the Rings: The Fellowship",    "genres": ["Action", "Adventure", "Drama", "Fantasy"],     "type": "movie"},
+    {"movieId": 23, "title": "Avatar",                                   "genres": ["Action", "Adventure", "Fantasy", "Sci-Fi"],    "type": "movie"},
+    {"movieId": 24, "title": "Get Out",                                  "genres": ["Horror", "Mystery", "Thriller"],               "type": "movie"},
+    {"movieId": 25, "title": "It",                                       "genres": ["Horror", "Drama"],                             "type": "movie"},
+    {"movieId": 26, "title": "Spirited Away",                            "genres": ["Adventure", "Animation", "Fantasy"],           "type": "movie"},
+    {"movieId": 27, "title": "Spider-Man: Into the Spider-Verse",        "genres": ["Action", "Adventure", "Animation"],            "type": "movie"},
+    {"movieId": 28, "title": "The Grand Budapest Hotel",                 "genres": ["Comedy", "Drama"],                             "type": "movie"},
+    {"movieId": 29, "title": "Superbad",                                 "genres": ["Comedy"],                                      "type": "movie"},
+    {"movieId": 30, "title": "Barbie",                                   "genres": ["Adventure", "Comedy", "Fantasy"],              "type": "movie"},
+    {"movieId": 31, "title": "Breaking Bad",                             "genres": ["Crime", "Drama", "Thriller"],                  "type": "series"},
+    {"movieId": 32, "title": "Stranger Things",                          "genres": ["Drama", "Fantasy", "Horror", "Mystery", "Sci-Fi"], "type": "series"},
+    {"movieId": 33, "title": "Game of Thrones",                          "genres": ["Action", "Adventure", "Drama", "Fantasy"],     "type": "series"},
+    {"movieId": 34, "title": "The Last of Us",                           "genres": ["Action", "Adventure", "Drama", "Horror"],      "type": "series"},
+    {"movieId": 35, "title": "Squid Game",                               "genres": ["Action", "Drama", "Mystery", "Thriller"],      "type": "series"},
+    {"movieId": 36, "title": "Money Heist",                              "genres": ["Action", "Crime", "Mystery", "Thriller"],      "type": "series"},
+    {"movieId": 37, "title": "Narcos",                                   "genres": ["Crime", "Drama", "Thriller"],                  "type": "series"},
+    {"movieId": 38, "title": "True Detective",                           "genres": ["Crime", "Drama", "Mystery", "Thriller"],       "type": "series"},
+    {"movieId": 39, "title": "Mindhunter",                               "genres": ["Crime", "Drama", "Thriller"],                  "type": "series"},
+    {"movieId": 40, "title": "Ozark",                                    "genres": ["Crime", "Drama", "Thriller"],                  "type": "series"},
+    {"movieId": 41, "title": "Better Call Saul",                         "genres": ["Crime", "Drama"],                              "type": "series"},
+    {"movieId": 42, "title": "Peaky Blinders",                           "genres": ["Crime", "Drama"],                              "type": "series"},
+    {"movieId": 43, "title": "Black Mirror",                             "genres": ["Drama", "Sci-Fi", "Thriller"],                 "type": "series"},
+    {"movieId": 44, "title": "Dark",                                     "genres": ["Crime", "Drama", "Mystery", "Sci-Fi"],         "type": "series"},
+    {"movieId": 45, "title": "Severance",                                "genres": ["Drama", "Mystery", "Sci-Fi", "Thriller"],      "type": "series"},
+    {"movieId": 46, "title": "The Boys",                                 "genres": ["Action", "Comedy", "Crime", "Sci-Fi"],         "type": "series"},
+    {"movieId": 47, "title": "The Mandalorian",                          "genres": ["Action", "Adventure", "Fantasy", "Sci-Fi"],    "type": "series"},
+    {"movieId": 48, "title": "House of the Dragon",                      "genres": ["Action", "Adventure", "Drama", "Fantasy"],     "type": "series"},
+    {"movieId": 49, "title": "The Witcher",                              "genres": ["Action", "Adventure", "Fantasy"],              "type": "series"},
+    {"movieId": 50, "title": "Arcane",                                   "genres": ["Action", "Adventure", "Animation", "Fantasy"], "type": "series"},
+    {"movieId": 51, "title": "Wednesday",                                "genres": ["Comedy", "Fantasy", "Horror", "Mystery"],      "type": "series"},
+    {"movieId": 52, "title": "The Haunting of Hill House",               "genres": ["Drama", "Horror", "Mystery"],                  "type": "series"},
+    {"movieId": 53, "title": "Succession",                               "genres": ["Drama"],                                       "type": "series"},
+    {"movieId": 54, "title": "The Crown",                                "genres": ["Drama"],                                       "type": "series"},
+    {"movieId": 55, "title": "The Bear",                                 "genres": ["Comedy", "Drama"],                             "type": "series"},
+    {"movieId": 56, "title": "Ted Lasso",                                "genres": ["Comedy", "Drama"],                             "type": "series"},
+    {"movieId": 57, "title": "The Office",                               "genres": ["Comedy"],                                      "type": "series"},
+    {"movieId": 58, "title": "Friends",                                  "genres": ["Comedy", "Romance"],                           "type": "series"},
+    {"movieId": 59, "title": "Normal People",                            "genres": ["Drama", "Romance"],                            "type": "series"},
+    {"movieId": 60, "title": "Sherlock",                                 "genres": ["Crime", "Drama", "Mystery"],                   "type": "series"},
 ]
 
-
-class UserRecommendationRequest(BaseModel):
-    favoriteGenres: List[str] = Field(default_factory=list)
-    favoriteGenre: Optional[str] = None
-    topK: int = Field(default=10, ge=1, le=100)
-    threshold: float = Field(default=0.5, ge=0.0, le=1.0)
+POLL_TTL_SECONDS = 7200
 
 
+# ---------------------------------------------------------------------------
+# Pydantic models
+# ---------------------------------------------------------------------------
 class RoomUser(BaseModel):
     userId: str
     favoriteGenres: List[str] = Field(default_factory=list)
@@ -40,7 +89,14 @@ class RoomUser(BaseModel):
 
 class RoomRecommendationRequest(BaseModel):
     users: List[RoomUser]
-    topK: int = Field(default=10, ge=1, le=100)
+    topK: int = Field(default=10, ge=1, le=50)
+
+
+class UserRecommendationRequest(BaseModel):
+    favoriteGenres: List[str] = Field(default_factory=list)
+    favoriteGenre: Optional[str] = None
+    topK: int = Field(default=10, ge=1, le=50)
+    threshold: float = Field(default=0.5, ge=0.0, le=1.0)
 
 
 class RoomPollVoteRequest(BaseModel):
@@ -48,344 +104,97 @@ class RoomPollVoteRequest(BaseModel):
     movieId: int
 
 
-class MovieItem(BaseModel):
-    movieId: int
-    title: str
-    genres: List[str]
-    popularity: float | None = None
+# ---------------------------------------------------------------------------
+# Recommendation logic
+# ---------------------------------------------------------------------------
+def _genres_for(user: RoomUser) -> list[str]:
+    genres = list(user.favoriteGenres)
+    if user.favoriteGenre and user.favoriteGenre not in genres:
+        genres.append(user.favoriteGenre)
+    return genres
 
 
-class RecommendationService:
-    def __init__(self) -> None:
-        self.predictor: Optional[MiraloMLPredictor] = None
-        self.movies_df: pd.DataFrame = pd.DataFrame()
-        self.load_error: Optional[str] = None
-        self.room_polls: dict[str, dict[str, Any]] = {}
-        # Do NOT load here — loading blocks the entire worker startup and causes
-        # Azure's HTTP probe to time out.  reload() is called from startup_event
-        # in a background thread so gunicorn can bind and respond immediately.
+def _score_movie(movie_genres: list[str], genre_weights: Counter) -> float:
+    total = sum(genre_weights.values())
+    if total == 0:
+        return 0.0
+    return sum(genre_weights.get(g, 0) for g in movie_genres) / total
 
-    def reload(self) -> None:
-        try:
-            predictor = MiraloMLPredictor()
-            predictor.load_movies()
-            self.predictor = predictor
-            # Reference the predictor's df directly — no copy needed.
-            # parsed_genres is added in-place; predictor never uses that column.
-            self.movies_df = predictor.movies_df if predictor.movies_df is not None else pd.DataFrame()
-            if not self.movies_df.empty:
-                self.movies_df["parsed_genres"] = self.movies_df["genres"].apply(self._parse_genres)
-            self.load_error = None
-        except Exception as exc:  # pragma: no cover - startup protection
-            self.predictor = None
-            self.movies_df = pd.DataFrame()
-            self.load_error = str(exc)
 
-    def is_ready(self) -> bool:
-        return self.predictor is not None and not self.movies_df.empty
-
-    def _ensure_ready(self) -> MiraloMLPredictor:
-        if not self.predictor or self.movies_df.empty:
-            raise HTTPException(status_code=503, detail=self.load_error or "Model or dataset not available")
-        return self.predictor
-
-    def _json_safe(self, value: Any) -> Any:
-        if isinstance(value, dict):
-            return {str(key): self._json_safe(val) for key, val in value.items()}
-        if isinstance(value, list):
-            return [self._json_safe(item) for item in value]
-        if isinstance(value, tuple):
-            return [self._json_safe(item) for item in value]
-        if hasattr(value, "item") and callable(value.item):
-            try:
-                return value.item()
-            except Exception:
-                return value
-        return value
-
-    def _room_request_from_payload(self, payload: Any, default_top_k: int = 10) -> RoomRecommendationRequest:
-        if isinstance(payload, RoomRecommendationRequest):
-            return payload
-        if isinstance(payload, list):
-            users = [RoomUser(**item) for item in payload]
-            return RoomRecommendationRequest(users=users, topK=default_top_k)
-        if isinstance(payload, dict):
-            users = [RoomUser(**item) for item in payload.get("users", [])]
-            top_k = int(payload.get("topK", default_top_k))
-            return RoomRecommendationRequest(users=users, topK=max(default_top_k, top_k))
-        raise HTTPException(status_code=400, detail="Invalid room payload")
-
-    def _normalize_options(self, options: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        cleaned = []
-        for option in options:
-            item = dict(option)
-            item["movieId"] = int(item["movieId"])
-            item["consensus_score"] = float(item.get("consensus_score", 0.0))
-            cleaned.append(item)
-        cleaned.sort(key=lambda item: (-float(item.get("consensus_score", 0.0)), item.get("title", ""), int(item["movieId"])))
-        return cleaned
-
-    def _poll_vote_counts(self, poll: dict[str, Any]) -> dict[int, int]:
-        counts: dict[int, int] = {int(option["movieId"]): 0 for option in poll.get("options", [])}
-        for movie_id in poll.get("votes", {}).values():
-            movie_id_int = int(movie_id)
-            counts[movie_id_int] = counts.get(movie_id_int, 0) + 1
-        return counts
-
-    def _poll_winner(self, poll: dict[str, Any]) -> Optional[dict[str, Any]]:
-        options = poll.get("options", [])
-        if not options:
-            return None
-        vote_counts = self._poll_vote_counts(poll)
-
-        def sort_key(option: dict[str, Any]) -> tuple[int, float, int]:
-            movie_id = int(option["movieId"])
-            return (vote_counts.get(movie_id, 0), float(option.get("consensus_score", 0.0)), -movie_id)
-
-        winner = max(options, key=sort_key)
-        winner_copy = dict(winner)
-        winner_copy["voteCount"] = vote_counts.get(int(winner_copy["movieId"]), 0)
-        return winner_copy
-
-    def _format_poll(self, poll: dict[str, Any]) -> dict[str, Any]:
-        vote_counts = self._poll_vote_counts(poll)
-        options = []
-        for option in poll.get("options", []):
-            option_copy = dict(option)
-            option_copy["voteCount"] = vote_counts.get(int(option_copy["movieId"]), 0)
-            options.append(option_copy)
-        return self._json_safe({
-            "pollId": poll["pollId"],
-            "createdAt": poll["createdAt"],
-            "totalUsers": poll.get("totalUsers", 0),
-            "votesCast": len(poll.get("votes", {})),
-            "options": self._normalize_options(options),
-            "winner": self._poll_winner({**poll, "options": options}),
-        })
-
-    def _parse_genres(self, raw_genres: Any) -> list[str]:
-        if raw_genres is None or (isinstance(raw_genres, float) and pd.isna(raw_genres)):
-            return []
-        text = str(raw_genres).strip()
-        if not text or text == "(no genres listed)":
-            return []
-        if "|" in text:
-            return [genre.strip() for genre in text.split("|") if genre.strip()]
-        remaining = text
-        parsed: list[str] = []
-        ordered_genres = sorted(KNOWN_GENRES, key=len, reverse=True)
-        while remaining:
-            matched = None
-            for genre in ordered_genres:
-                if remaining.startswith(genre):
-                    parsed.append(genre)
-                    remaining = remaining[len(genre):]
-                    matched = True
-                    break
-            if not matched:
-                remaining = remaining[1:]
-        return parsed
-
-    def _cleanup_old_polls(self) -> None:
-        now = datetime.now(timezone.utc)
-        to_delete = [
-            pid for pid, poll in self.room_polls.items()
-            if (now - datetime.fromisoformat(poll["createdAt"].rstrip("Z")).replace(tzinfo=timezone.utc)).total_seconds() > POLL_TTL_SECONDS
-        ]
-        for pid in to_delete:
-            del self.room_polls[pid]
-
-    def _build_genre_based_recommendations(self, preferred_genres: list[str], top_k: int) -> list[dict[str, Any]]:
-        if self.movies_df.empty or not preferred_genres:
-            return []
-        preferred_set = {genre for genre in preferred_genres if genre}
-        if not preferred_set:
-            return []
-
-        # Vectorised overlap count — avoids itertuples+pd.Series overhead
-        overlap_sizes = self.movies_df["parsed_genres"].apply(lambda g: len(preferred_set.intersection(g)))
-        mask = overlap_sizes > 0
-        if not mask.any():
-            return []
-
-        filtered = self.movies_df[mask].copy()
-        filtered["_overlap"] = overlap_sizes[mask].values
-        filtered["_popularity"] = filtered["popularity"].fillna(0.0)
-        filtered["consensus_score"] = (
-            (0.55 + filtered["_overlap"] * 0.15 + filtered["_popularity"] * 0.25)
-            .clip(upper=0.99)
-            .round(4)
-        )
-        filtered = filtered.sort_values(["_overlap", "_popularity", "title"], ascending=[False, False, True])
-
-        results = []
-        for row in filtered.head(top_k).itertuples(index=False):
-            overlap = preferred_set.intersection(row.parsed_genres)
-            results.append({
-                "movieId": int(row.movieId),
-                "title": str(row.title),
-                "genres": list(row.parsed_genres),
-                "consensus_score": round(float(row.consensus_score), 4),
-                "reasons": [f"Coincide con los géneros de la sala: {', '.join(sorted(overlap))}"],
+def recommend(genre_weights: Counter, top_k: int = 10) -> list[dict[str, Any]]:
+    if not genre_weights:
+        return []
+    scored = []
+    for item in CATALOGUE:
+        score = _score_movie(item["genres"], genre_weights)
+        if score > 0:
+            matching = [g for g in item["genres"] if genre_weights.get(g, 0) > 0]
+            scored.append({
+                "movieId": item["movieId"],
+                "title": item["title"],
+                "genres": item["genres"],
+                "type": item["type"],
+                "consensus_score": round(score, 4),
+                "reasons": [f"Coincide con los géneros: {', '.join(matching)}"],
             })
-        return self._json_safe(results)
-
-    def health(self) -> dict[str, Any]:
-        return {
-            "status": "ready" if self.is_ready() else "not_ready",
-            "message": "Service ready" if self.is_ready() else "Service not ready",
-            "modelLoaded": self.predictor is not None,
-            "datasetLoaded": not self.movies_df.empty,
-            "error": self.load_error,
-        }
-
-    def get_report(self) -> dict[str, Any]:
-        if not REPORT_FILE.exists():
-            raise HTTPException(status_code=404, detail="training_report.json not found")
-        return json.loads(REPORT_FILE.read_text(encoding="utf-8"))
-
-    def get_genres(self) -> list[str]:
-        predictor = self._ensure_ready()
-        genres = set()
-        for values in self.movies_df.get("parsed_genres", pd.Series(dtype=object)).dropna().tolist():
-            for genre in values:
-                if genre and genre != "(no genres listed)":
-                    genres.add(str(genre))
-        if genres:
-            return sorted(genres)
-        if predictor.mlb is not None and hasattr(predictor.mlb, "classes_"):
-            return [str(genre) for genre in predictor.mlb.classes_]
-        return sorted(genres)
-
-    def list_movies(self, skip: int = 0, limit: int = 20, genre: Optional[str] = None, q: Optional[str] = None) -> dict[str, Any]:
-        self._ensure_ready()
-        # Avoid copying the full DataFrame — filter produces a new view/subset
-        df = self.movies_df
-        if q:
-            df = df[df["title"].astype(str).str.contains(q, case=False, na=False)]
-        if genre:
-            normalized = genre.strip().lower()
-            df = df[df["parsed_genres"].apply(lambda values: any(str(v).strip().lower() == normalized for v in values if str(v).strip()))]
-
-        total = int(len(df))
-        if "popularity" in df.columns:
-            df = df.sort_values(by=["popularity", "title"], ascending=[False, True])
-        else:
-            df = df.sort_values(by=["title"], ascending=[True])
-
-        page = df.iloc[skip: skip + limit]
-        movies = [
-            {
-                "movieId": int(row.movieId),
-                "title": str(row.title),
-                "genres": [g for g in self._parse_genres(row.genres) if g and g != "(no genres listed)"],
-                "popularity": float(row.popularity) if "popularity" in page.columns and pd.notna(row.popularity) else None,
-            }
-            for row in page.itertuples(index=False)
-        ]
-        return {"total": total, "skip": skip, "limit": limit, "items": movies}
-
-    def get_movie(self, movie_id: int) -> dict[str, Any]:
-        self._ensure_ready()
-        match = self.movies_df[self.movies_df["movieId"] == movie_id]
-        if match.empty:
-            raise HTTPException(status_code=404, detail="Movie not found")
-        row = match.iloc[0]
-        return {
-            "movieId": int(row["movieId"]),
-            "title": str(row["title"]),
-            "genres": [g for g in self._parse_genres(row["genres"]) if g and g != "(no genres listed)"],
-            "popularity": float(row["popularity"]) if "popularity" in match.columns and pd.notna(row["popularity"]) else None,
-        }
-
-    def recommend_user(self, payload: UserRecommendationRequest) -> dict[str, Any]:
-        predictor = self._ensure_ready()
-        genres = payload.favoriteGenres or ([payload.favoriteGenre] if payload.favoriteGenre else [])
-        recommendations = predictor.predict_for_user(
-            favorite_genres=genres,
-            top_k=payload.topK,
-            threshold=payload.threshold,
-        )
-        return self._json_safe({"success": True, "count": len(recommendations), "recommendations": recommendations})
-
-    def recommend_room(self, payload: Any) -> dict[str, Any]:
-        request = self._room_request_from_payload(payload)
-        return self._recommend_room_from_request(request)
-
-    def _recommend_room_from_request(self, request: RoomRecommendationRequest) -> dict[str, Any]:
-        predictor = self._ensure_ready()
-        users = []
-        preferred_genres: list[str] = []
-        for user in request.users:
-            genres = user.favoriteGenres or ([user.favoriteGenre] if user.favoriteGenre else [])
-            preferred_genres.extend(genres)
-            users.append({"userId": user.userId, "favoriteGenres": genres})
-
-        genre_based = self._build_genre_based_recommendations(preferred_genres, request.topK)
-        result = predictor.predict_for_room(room_users_data=users, top_k=request.topK)
-
-        if isinstance(result, dict) and result.get("error"):
-            raise HTTPException(status_code=400, detail=str(result["error"]))
-
-        model_recommendations = result.get("recommendations", []) if isinstance(result, dict) else []
-        total_users = result.get("total_users", len(users)) if isinstance(result, dict) else len(users)
-
-        merged: list[dict[str, Any]] = []
-        seen_movie_ids: set[int] = set()
-        for item in genre_based + model_recommendations:
-            movie_id = int(item["movieId"])
-            if movie_id in seen_movie_ids:
-                continue
-            seen_movie_ids.add(movie_id)
-            merged.append(item)
-            if len(merged) >= request.topK:
-                break
-
-        return self._json_safe({
-            "success": True,
-            "totalUsers": total_users,
-            "recommendationCount": len(merged),
-            "recommendations": merged,
-        })
-
-    def create_room_poll(self, payload: Any) -> dict[str, Any]:
-        self._cleanup_old_polls()
-        request = self._room_request_from_payload(payload)
-        room_recommendations = self._recommend_room_from_request(request)
-        options = self._normalize_options(room_recommendations.get("recommendations", [])[:3])
-
-        poll_id = str(uuid4())
-        poll = {
-            "pollId": poll_id,
-            "createdAt": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
-            "totalUsers": room_recommendations.get("totalUsers", len(request.users)),
-            "options": options,
-            "votes": {},
-        }
-        self.room_polls[poll_id] = poll
-        return self._format_poll(poll)
-
-    def get_room_poll(self, poll_id: str) -> dict[str, Any]:
-        poll = self.room_polls.get(poll_id)
-        if not poll:
-            raise HTTPException(status_code=404, detail="Poll not found")
-        return self._format_poll(poll)
-
-    def vote_room_poll(self, poll_id: str, payload: RoomPollVoteRequest) -> dict[str, Any]:
-        poll = self.room_polls.get(poll_id)
-        if not poll:
-            raise HTTPException(status_code=404, detail="Poll not found")
-        allowed_ids = {int(option["movieId"]): option for option in poll.get("options", [])}
-        if int(payload.movieId) not in allowed_ids:
-            raise HTTPException(status_code=400, detail="Movie is not part of the poll options")
-        poll.setdefault("votes", {})[payload.userId] = int(payload.movieId)
-        return self._format_poll(poll)
+    scored.sort(key=lambda x: (-x["consensus_score"], x["title"]))
+    return scored[:top_k]
 
 
+def room_genre_weights(users: list[RoomUser]) -> Counter:
+    weights: Counter = Counter()
+    for user in users:
+        for genre in _genres_for(user):
+            if genre:
+                weights[genre] += 1
+    return weights
+
+
+# ---------------------------------------------------------------------------
+# Poll helpers
+# ---------------------------------------------------------------------------
+_polls: dict[str, dict[str, Any]] = {}
+
+
+def _cleanup_polls() -> None:
+    now = datetime.now(timezone.utc)
+    stale = [
+        pid for pid, poll in _polls.items()
+        if (now - datetime.fromisoformat(poll["createdAt"].rstrip("Z")).replace(tzinfo=timezone.utc)).total_seconds() > POLL_TTL_SECONDS
+    ]
+    for pid in stale:
+        del _polls[pid]
+
+
+def _vote_counts(poll: dict) -> dict[int, int]:
+    counts = {int(opt["movieId"]): 0 for opt in poll["options"]}
+    for mid in poll["votes"].values():
+        counts[int(mid)] = counts.get(int(mid), 0) + 1
+    return counts
+
+
+def _format_poll(poll: dict) -> dict[str, Any]:
+    counts = _vote_counts(poll)
+    options = [{**opt, "voteCount": counts.get(int(opt["movieId"]), 0)} for opt in poll["options"]]
+    options.sort(key=lambda o: (-o["voteCount"], -o["consensus_score"]))
+    winner = options[0] if options else None
+    return {
+        "pollId": poll["pollId"],
+        "createdAt": poll["createdAt"],
+        "totalUsers": poll["totalUsers"],
+        "votesCast": len(poll["votes"]),
+        "options": options,
+        "winner": winner,
+    }
+
+
+# ---------------------------------------------------------------------------
+# FastAPI app
+# ---------------------------------------------------------------------------
 app = FastAPI(
     title="MIRALO Recommendation Engine",
-    version="2.0.0",
-    description="FastAPI service for movie recommendations using the existing ML dataset and trained models.",
+    version="3.0.0",
+    description="Movie and series recommendations for rooms with voting.",
 )
 
 app.add_middleware(
@@ -396,115 +205,136 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-service = RecommendationService()
-
-
-@app.on_event("startup")
-async def startup_event() -> None:
-    import asyncio
-    # Load model in a background thread so gunicorn binds immediately and
-    # Azure's startup probe (HTTP GET /) gets a 200 right away.
-    # Endpoints that need the model return 503 until loading finishes (~30-60 s).
-    asyncio.create_task(asyncio.to_thread(service.reload))
-
 
 @app.get("/")
-def root() -> dict[str, str]:
+def root():
     return {"message": "MIRALO Recommendation Engine API", "docs": "/docs"}
 
 
 @app.get("/health")
-def health() -> dict[str, Any]:
-    payload = service.health()
-    if payload["status"] != "ready":
-        raise HTTPException(status_code=503, detail=payload)
-    return payload
+def health():
+    return {"status": "ready", "message": "Service ready", "catalogueSize": len(CATALOGUE)}
 
 
-@app.get("/model/report")
-def model_report() -> dict[str, Any]:
-    return service.get_report()
-
-
-@app.get("/genres")
-def genres() -> dict[str, Any]:
-    return {"count": len(service.get_genres()), "items": service.get_genres()}
-
-
-@app.get("/movies")
-def movies(
-    skip: int = Query(default=0, ge=0),
-    limit: int = Query(default=20, ge=1, le=100),
-    genre: Optional[str] = Query(default=None),
-    q: Optional[str] = Query(default=None),
-) -> dict[str, Any]:
-    return service.list_movies(skip=skip, limit=limit, genre=genre, q=q)
-
-
-@app.get("/movies/{movie_id}")
-def movie_detail(movie_id: int) -> dict[str, Any]:
-    return service.get_movie(movie_id)
-
-
+# ---------------------------------------------------------------------------
+# User recommendations
+# ---------------------------------------------------------------------------
 @app.post("/recommendations/user")
-def recommendations_user(payload: UserRecommendationRequest) -> dict[str, Any]:
-    return service.recommend_user(payload)
+def recommendations_user(payload: UserRecommendationRequest):
+    genres = list(payload.favoriteGenres)
+    if payload.favoriteGenre and payload.favoriteGenre not in genres:
+        genres.append(payload.favoriteGenre)
+    weights: Counter = Counter(genres)
+    recs = recommend(weights, top_k=payload.topK)
+    return {"success": True, "count": len(recs), "recommendations": recs}
+
+
+# ---------------------------------------------------------------------------
+# Room recommendations
+# ---------------------------------------------------------------------------
+def _room_from_payload(payload: Any) -> tuple[list[RoomUser], int]:
+    """Parse room payload in any of the three accepted shapes."""
+    if isinstance(payload, list):
+        users = [RoomUser(**u) if isinstance(u, dict) else u for u in payload]
+        return users, 10
+    if isinstance(payload, dict):
+        raw_users = payload.get("users", [])
+        users = [RoomUser(**u) if isinstance(u, dict) else u for u in raw_users]
+        return users, int(payload.get("topK", 10))
+    raise HTTPException(status_code=400, detail="Invalid room payload")
 
 
 @app.post("/recommendations/room")
-def recommendations_room(payload: Any = Body(...)) -> dict[str, Any]:
-    return service.recommend_room(payload)
+def recommendations_room(payload: Any = Body(...)):
+    users, top_k = _room_from_payload(payload)
+    if not users:
+        raise HTTPException(status_code=400, detail="No users provided")
+    weights = room_genre_weights(users)
+    recs = recommend(weights, top_k=top_k)
+    return {
+        "success": True,
+        "totalUsers": len(users),
+        "recommendationCount": len(recs),
+        "recommendations": recs,
+    }
 
 
+# ---------------------------------------------------------------------------
+# Room polls
+# ---------------------------------------------------------------------------
 @app.post("/recommendations/room/poll")
-def create_room_poll(payload: Any = Body(...)) -> dict[str, Any]:
-    return service.create_room_poll(payload)
+def create_room_poll(payload: Any = Body(...)):
+    _cleanup_polls()
+    users, _ = _room_from_payload(payload)
+    if not users:
+        raise HTTPException(status_code=400, detail="No users provided")
+    weights = room_genre_weights(users)
+    top3 = recommend(weights, top_k=3)
+    if not top3:
+        raise HTTPException(status_code=400, detail="No recommendations found for given genres")
+
+    poll_id = str(uuid4())
+    _polls[poll_id] = {
+        "pollId": poll_id,
+        "createdAt": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+        "totalUsers": len(users),
+        "options": top3,
+        "votes": {},
+    }
+    return _format_poll(_polls[poll_id])
 
 
 @app.get("/recommendations/room/poll/{poll_id}")
-def get_room_poll(poll_id: str) -> dict[str, Any]:
-    return service.get_room_poll(poll_id)
+def get_room_poll(poll_id: str):
+    poll = _polls.get(poll_id)
+    if not poll:
+        raise HTTPException(status_code=404, detail="Poll not found")
+    return _format_poll(poll)
 
 
 @app.post("/recommendations/room/poll/{poll_id}/vote")
-def vote_room_poll(poll_id: str, payload: RoomPollVoteRequest) -> dict[str, Any]:
-    return service.vote_room_poll(poll_id, payload)
+def vote_room_poll(poll_id: str, payload: RoomPollVoteRequest):
+    poll = _polls.get(poll_id)
+    if not poll:
+        raise HTTPException(status_code=404, detail="Poll not found")
+    valid_ids = {int(opt["movieId"]) for opt in poll["options"]}
+    if int(payload.movieId) not in valid_ids:
+        raise HTTPException(status_code=400, detail="Movie is not part of the poll options")
+    poll["votes"][payload.userId] = int(payload.movieId)
+    return _format_poll(poll)
 
 
-# Aliases for backwards compatibility with the previous /ml routes
+# ---------------------------------------------------------------------------
+# Legacy /ml aliases (backwards compatibility)
+# ---------------------------------------------------------------------------
 @app.get("/ml/health")
-def ml_health() -> dict[str, Any]:
+def ml_health():
     return health()
 
 
-@app.get("/ml/report")
-def ml_report() -> dict[str, Any]:
-    return model_report()
-
-
 @app.post("/ml/predict")
-def ml_predict(payload: UserRecommendationRequest) -> dict[str, Any]:
+def ml_predict(payload: UserRecommendationRequest):
     return recommendations_user(payload)
 
 
 @app.post("/ml/predict-room")
-def ml_predict_room(payload: Any = Body(...)) -> dict[str, Any]:
+def ml_predict_room(payload: Any = Body(...)):
     return recommendations_room(payload)
 
 
 @app.post("/ml/predict-room/poll")
-def ml_create_room_poll(payload: Any = Body(...)) -> dict[str, Any]:
+def ml_create_room_poll(payload: Any = Body(...)):
     return create_room_poll(payload)
 
 
-@app.post("/ml/predict-room/poll/{poll_id}/vote")
-def ml_vote_room_poll(poll_id: str, payload: RoomPollVoteRequest) -> dict[str, Any]:
-    return vote_room_poll(poll_id, payload)
-
-
 @app.get("/ml/predict-room/poll/{poll_id}")
-def ml_get_room_poll(poll_id: str) -> dict[str, Any]:
+def ml_get_room_poll(poll_id: str):
     return get_room_poll(poll_id)
+
+
+@app.post("/ml/predict-room/poll/{poll_id}/vote")
+def ml_vote_room_poll(poll_id: str, payload: RoomPollVoteRequest):
+    return vote_room_poll(poll_id, payload)
 
 
 if __name__ == "__main__":

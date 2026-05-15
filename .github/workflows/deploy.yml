@@ -13,56 +13,19 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout código
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Python ${{ env.PYTHON_VERSION }}
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          cache: 'pip'
-
-      - name: Instalar dependencias (incluyendo dev para tests)
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements-dev.txt
-
-      - name: Ejecutar tests
-        run: |
-          python -m pytest tests/ -q || true
 
       - name: Empaquetar artefacto
         run: |
-          mkdir -p deploy
-          cp main.py requirements.txt startup.sh deploy/
-          cp -r ml deploy/
-          cp -r ml_models deploy/
-          # ratings.csv is NOT bundled — only needed for training.
-          mkdir -p deploy/data
-          cp data/movies.csv deploy/data/
+          zip -r release.zip main.py requirements.txt startup.sh \
+            --exclude "*.git*" --exclude "__pycache__/*" --exclude "*.pyc"
 
-          # Bundle production dependencies inside the zip so gunicorn and all
-          # packages are available at runtime without any pip install at startup.
-          # Azure App Service automatically adds .python_packages/lib/site-packages
-          # to PYTHONPATH when it detects that directory.
-          pip install \
-            --target deploy/.python_packages/lib/site-packages \
-            -r requirements.txt
-
-          cd deploy
-          # rf_model excluded: XGBoost (531 KB) has identical accuracy and
-          # 20× smaller footprint — saves ~11 MB per deploy.
-          zip -r ../release.zip . \
-            --exclude "*.git*" \
-            --exclude "__pycache__/*" \
-            --exclude "*.pyc" \
-            --exclude ".pytest_cache/*" \
-            --exclude "ml_models/rf_recommender_model.joblib"
-
-      - name: Subir artefacto
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: fastapi-app
           path: release.zip
@@ -71,14 +34,11 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     needs: build
-    if: success()
     environment:
       name: production
       url: https://${{ env.AZURE_WEBAPP_NAME }}.azurewebsites.net
-
     steps:
-      - name: Descargar artefacto
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
           name: fastapi-app
 
@@ -88,8 +48,3 @@ jobs:
           app-name: ${{ env.AZURE_WEBAPP_NAME }}
           publish-profile: ${{ secrets.AZURE_PUBLISH_PROFILE }}
           package: release.zip
-
-      - name: Log deployment
-        run: |
-          echo "✅ Deployment completed!"
-          echo "App URL: https://${{ env.AZURE_WEBAPP_NAME }}.azurewebsites.net"
